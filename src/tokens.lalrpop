@@ -1,0 +1,205 @@
+use crate::*;
+grammar;
+
+pub Expr: Expr = {
+	Add
+}
+
+Numeric: Expr = {
+	Int => Expr::Val(Value::i64(<>)),
+	Float => Expr::Val(Value::f32(<>.to_bits())),
+	Uint => Expr::Val(Value::u32(<>)),
+	Uint64 => Expr::Val(Value::u64(<>)),
+	Hex => Expr::Val(Value::u64(<>)),
+}
+
+Atom: Expr = {
+	Numeric,
+	Varname => {
+		if <> == "vk_uuid_size" {
+			Expr::Val(Value::i64(16))
+		} else {
+			Expr::Var(<>)
+		}
+	},
+	<Varname> "->" <Varname> => Expr::Accessor(<>),
+	"(" <Expr> ")"
+}
+
+Unop: Expr = {
+	<o:Char<"~">> <e:Unop> => Expr::Unop(o, box e),
+	<o:Char<"-">> <e:Unop> => Expr::Unop(o, box e),
+	Atom,
+}
+
+Char<T>: char = {
+	T => <>.chars().nth(0).unwrap()
+}
+
+Mul: Expr = {
+	<l:Mul> <o:Char<"*">> <r:Unop> => Expr::Binop(box l, o, box r),
+	<l:Mul> <o:Char<"/">> <r:Unop> => Expr::Binop(box l, o, box r),
+	<l:Mul> <o:Char<"%">> <r:Unop> => Expr::Binop(box l, o, box r),
+	Unop,
+}
+
+Add: Expr = {
+	<l:Add> <o:Char<"+">> <r:Mul> => Expr::Binop(box l, o, box r),
+	<l:Add> <o:Char<"-">> <r:Mul> => Expr::Binop(box l, o, box r),
+	Mul,
+}
+
+Hex: u64 = r"0x\d+" => u64::from_str_radix(&<>[2..], 16).unwrap();
+Int: i64 = r"\d+" => <>.parse().unwrap();
+Float: f32 = r"\d+([.]\d*)?f" => <>.replace("f", "").parse().unwrap();
+Uint: u32 = r"\d+[uU]" => <>[..<>.len() - 1].parse().unwrap();
+Uint64: u64 = r"\d+(ull|ULL)" => <>[..<>.len() - 3].parse().unwrap();
+
+Ident: &'input str = r"[a-zA-Z_][a-zA-Z_0-9]*";
+
+pub Member: StructMember = {
+	Decl Arr* => {
+		let ((name, ty, cv), arr) = (<>);
+		StructMember {
+			name, ty, cv, arr, ..Default::default()
+		}
+	},
+	<Decl> ":" <Int> => {
+		let ((name, ty, cv), bit) = (<>);
+		StructMember {
+			name, ty, cv, bit: Some(bit as _), ..Default::default()
+		}
+	}
+}
+
+
+Arr: Len = {
+	"[" <Int> "]" 	=> Len::i64(<>),
+	"[" <Ident> "]" =>  Len::apic(<>.to_string()),
+}
+
+CP: char = {
+	"const" => 'c',
+	"*" => 'p'
+}
+
+pub Base: &'input str = {
+	"float" => "f32",
+	"double" => "f64",
+	"int" => "i32",
+	"unsigned" => "u32",
+	"char" => "u8",
+	"void" => "c_void",
+	"size_t" => "usize",
+	"uint8_t"  => "u8",
+	"uint16_t" => "u16",
+	"uint32_t" => "u32",
+	"uint64_t" => "u64",
+	"int8_t"  => "i8",
+	"int16_t" => "i16",
+	"int32_t" => "i32",
+	"int64_t" => "i64",
+	"Display" => "foreign_Display",
+	"VisualID" => "foreign_VisualID",
+	"Window" => "foreign_Window",
+	"RROutput" => "foreign_RROutput",
+	"wl_display" => "foreign_wl_display",
+	"wl_surface" => "foreign_wl_surface",
+	"HINSTANCE" => "foreign_HINSTANCE",
+	"HWND" => "foreign_HWND",
+	"HMONITOR" => "foreign_HMONITOR",
+	"HANDLE" => "foreign_HANDLE",
+	"SECURITY_ATTRIBUTES" => "foreign_SECURITY_ATTRIBUTES",
+	"DWORD" => "foreign_DWORD",
+	"LPCWSTR" => "foreign_LPCWSTR",
+	"xcb_connection_t" => "foreign_xcb_connection_t",
+	"xcb_visualid_t" => "foreign_xcb_visualid_t",
+	"xcb_window_t" => "foreign_xcb_window_t",
+	"IDirectFB" => "foreign_IDirectFB",
+	"IDirectFBSurface" => "foreign_IDirectFBSurface",
+	"zx_handle_t" => "foreign_zx_handle_t",
+	"GgpStreamDescriptor" => "foreign_GgpStreamDescriptor",
+	"GgpFrameToken" => "foreign_GgpFrameToken",
+	Ident
+}
+
+CVTy: (String, String) = {
+	<pre:"const"*> "struct"? <t:Base> <mut cp:CP*> => {
+		if !pre.is_empty() {
+			cp.insert(0, 'c');
+		}
+		cp.reverse();
+		let s: String = cp.into_iter().collect();
+		let mut s = s.replace("pp", "pmpm");
+		if s.ends_with("p") {
+			s.push('m');
+		}
+		while s.find("cc").is_some() {
+			s = s.replace("cc", "c");
+		}
+		if s == "c" { s.pop(); }
+		(t.to_string(), s)
+	}
+}
+
+Varname: String = {
+	<mut n:Ident> => {
+		if n == "type" {
+			n = "ty";
+		}
+		let mut s = n.to_string();
+		while s.chars().nth(0) == Some('p')
+	        && s.chars()
+	            .nth(1)
+	            .map(|c| c.is_uppercase() || c == 'p')
+	            .unwrap_or_default()
+	    {
+	        s.remove(0);
+	    }
+		s.to_snake_case()
+	}
+}
+
+Decl: (String, String, String) = {
+	<t:CVTy> <n:Varname> => {
+		(n, t.0, t.1)
+	}
+}
+
+Ret = Base "*"?;
+
+pub FuncPtr: FnPtr = {
+	"typedef" <t:CVTy> "(" "VKAPI_PTR" "*" <name:Ident> ")" "(" <args:Seq<Member>> ")" ";" =>{
+		FnPtr {
+			name: name.to_string(),
+			ret: t.0,
+			ret_cv: t.1,
+			args
+		}
+	},
+	"typedef" <t:CVTy> "(" "VKAPI_PTR" "*" <name:Ident> ")" "(" "void" ")" ";" => {
+		FnPtr {
+			name: name.to_string(),
+			ret: t.0,
+			ret_cv: t.1,
+			args: vec![]
+		}
+	},
+
+	<t:CVTy> <name:Ident> "(" <args:Seq<Member>> ")" ";" => {
+		FnPtr {
+			name: name.to_string(),
+			ret: t.0,
+			ret_cv: t.1,
+			args
+		}
+	}
+}
+
+Seq<T> : Vec<T> = {
+	<mut l:(<T> ",")*> <r:T?> => {
+		if let Some(r) = r {
+			l.push(r);
+		} l
+	}
+}
